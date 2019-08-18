@@ -365,7 +365,7 @@ class Format {
         if (!isset($phpversion))
             $phpversion = phpversion();
 
-        $flags = ENT_COMPAT;
+        $flags = ENT_COMPAT | ENT_SUBSTITUTE;
         if ($phpversion >= '5.4.0')
             $flags |= ENT_HTML401;
 
@@ -381,7 +381,7 @@ class Format {
         if(is_array($var))
             return array_map(array('Format','htmldecode'), $var);
 
-        $flags = ENT_COMPAT;
+        $flags = ENT_COMPAT | ENT_SUBSTITUTE;
         if (phpversion() >= '5.4.0')
             $flags |= ENT_HTML401;
 
