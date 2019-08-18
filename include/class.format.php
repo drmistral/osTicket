@@ -449,7 +449,9 @@ class Format {
                 '/[\x{2310}-\x{231F}]/u',   # Hourglass/Watch
                 '/[\x{2322}-\x{232F}]/u'    # Keyboard
             ), '', $text);
-        return ($out == null) ? $text : $out;
+            
+        // In case of regex error returns original string
+        return (PREG_NO_ERROR !== preg_last_error()) ? $text : $out;
     }
 
     //make urls clickable. Mainly for display
