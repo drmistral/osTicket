@@ -426,8 +426,6 @@ class Format {
 
     // Strip all Emoticon/Emoji characters until we support them
     function strip_emoticons($text) {
-        return $text;
-        /*
         $out = preg_replace(array(
                 '/[\x{1F601}-\x{1F64F}]/u', # Emoticons
                 '/[\x{1F680}-\x{1F6C0}]/u', # Transport/Map
@@ -452,7 +450,6 @@ class Format {
                 '/[\x{2322}-\x{232F}]/u'    # Keyboard
             ), '', $text);
         return ($out == null) ? $text : $out;
-        */
     }
 
     //make urls clickable. Mainly for display
