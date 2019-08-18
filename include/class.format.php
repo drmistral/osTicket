@@ -365,7 +365,7 @@ class Format {
         if (!isset($phpversion))
             $phpversion = phpversion();
 
-        $flags = ENT_COMPAT;
+        $flags = ENT_COMPAT | ENT_SUBSTITUTE;
         if ($phpversion >= '5.4.0')
             $flags |= ENT_HTML401;
 
@@ -381,7 +381,7 @@ class Format {
         if(is_array($var))
             return array_map(array('Format','htmldecode'), $var);
 
-        $flags = ENT_COMPAT;
+        $flags = ENT_COMPAT | ENT_SUBSTITUTE;
         if (phpversion() >= '5.4.0')
             $flags |= ENT_HTML401;
 
@@ -426,7 +426,7 @@ class Format {
 
     // Strip all Emoticon/Emoji characters until we support them
     function strip_emoticons($text) {
-        return preg_replace(array(
+        $out = preg_replace(array(
                 '/[\x{1F601}-\x{1F64F}]/u', # Emoticons
                 '/[\x{1F680}-\x{1F6C0}]/u', # Transport/Map
                 '/[\x{1F600}-\x{1F636}]/u', # Add. Emoticons
@@ -449,6 +449,9 @@ class Format {
                 '/[\x{2310}-\x{231F}]/u',   # Hourglass/Watch
                 '/[\x{2322}-\x{232F}]/u'    # Keyboard
             ), '', $text);
+            
+        // In case of regex error returns original string
+        return (PREG_NO_ERROR !== preg_last_error()) ? $text : $out;
     }
 
     //make urls clickable. Mainly for display
