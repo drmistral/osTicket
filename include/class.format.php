@@ -42,6 +42,10 @@ class Format {
         return $size;
     }
 
+    function filename($filename) {
+        return preg_replace('/[^a-zA-Z0-9\-\._]/', '-', $filename);
+    }
+
     function mimedecode($text, $encoding='UTF-8') {
 
         if(function_exists('imap_mime_header_decode')
@@ -138,7 +142,7 @@ class Format {
             $xpath = new DOMXPath($doc);
             static $eE = array('area'=>1, 'br'=>1, 'col'=>1, 'embed'=>1,
                     'iframe' => 1, 'hr'=>1, 'img'=>1, 'input'=>1,
-                    'isindex'=>1, 'param'=>1);
+                    'isindex'=>1, 'param'=>1, 'div'=>1);
             do {
                 $done = true;
                 $nodes = $xpath->query('//*[not(text()) and not(node())]');
@@ -496,7 +500,7 @@ class Format {
     function viewableImages($html, $options=array()) {
         $cids = $images = array();
         $options +=array(
-                'deposition' => 'inline');
+                'disposition' => 'inline');
         return preg_replace_callback('/"cid:([\w._-]{32})"/',
         function($match) use ($options, $images) {
             if (!($file = AttachmentFile::lookup($match[1])))
@@ -547,6 +551,37 @@ class Format {
         }
 
         return number_format((int) $number);
+    }
+
+    /*
+     * Add ORDINAL suffix to a number e.g 1st, 2nd, 3rd etc.
+     * TODO: Combine this routine with Format::number and pass in type of
+     * formatting.
+     */
+    function ordinalsuffix($number, $locale=false) {
+        if (is_array($number))
+            return array_map(array('Format', 'ordinalsuffix'), $number);
+
+        if (!is_numeric($number))
+            return $number;
+
+        if (extension_loaded('intl') && class_exists('NumberFormatter')) {
+            $nf = new NumberFormatter($locale ?:
+                    Internationalization::getCurrentLocale(),
+                    NumberFormatter::ORDINAL);
+            return $nf->format($number);
+        }
+
+        // Default to English ordinal
+        if (!in_array(($number % 100), [11,12,13])) {
+            switch ($number % 10) {
+            case 1:  return $number.'st';
+            case 2:  return $number.'nd';
+            case 3:  return $number.'rd';
+            }
+        }
+
+        return $number.'th';
     }
 
     /* elapsed time */
@@ -615,11 +650,6 @@ class Format {
         $timezone = $datetime->getTimeZone();
         // Use IntlDateFormatter if available
         if (class_exists('IntlDateFormatter')) {
-
-            if ($cfg && $cfg->isForce24HourTime())
-                $format = str_replace(array('a', 'h'), array('', 'H'),
-                        $format);
-
             $options += array(
                     'pattern' => $format,
                     'timezone' => $timezone->getName());
@@ -636,6 +666,9 @@ class Format {
         // Change format to strftime format otherwise us a fallback format
         $format = self::getStrftimeFormat($format) ?: $options['strftime']
             ?:  '%x %X';
+        if ($cfg && $cfg->isForce24HourTime())
+            $format = str_replace('X', 'R', $format);
+
         return strftime($format, $timestamp);
     }
 
@@ -687,6 +720,8 @@ class Format {
             $tz = $datetime->getTimezone()->getName();
             if ($tz && $tz[0] == '+' || $tz[0] == '-')
                 $tz = (int) $datetime->format('Z');
+            elseif ($tz == 'Z')
+                $tz = 'UTC';
             $timezone =  new DateTimeZone(Format::timezone($tz) ?: 'UTC');
             $datetime->setTimezone($timezone);
         } catch (Exception $ex) {
@@ -795,6 +830,35 @@ class Format {
             },
             $format
         );
+    }
+
+    // Translate php date / time formats to js equivalent
+    function dtfmt_php2js($format) {
+
+        $codes = array(
+        // Date
+        'DD' => 'oo',
+        'D' => 'o',
+        'EEEE' => 'DD',
+        'EEE' => 'D',
+        'MMMM' => '||',
+        'MMM' => '|',
+        'MM' => 'mm',
+        'M' =>  'm',
+        '||' => 'MM',
+        '|' => 'M',
+        'yyyy' => 'YY',
+        'yyy' => 'YY',
+        'yy' =>  'Y',
+        'y' => 'yy',
+        'YY' =>  'yy',
+        'Y' => 'y',
+        // Time
+        'a' => 'tt',
+        'H' => 'HH',
+        );
+
+        return str_replace(array_keys($codes), array_values($codes), $format);
     }
 
     // Thanks, http://stackoverflow.com/a/2955878/1025836
