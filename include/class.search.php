@@ -1091,12 +1091,7 @@ extends SavedSearch {
                    'staff_id' => $thisstaff->getId(),
                    'title' => __('Advanced Search'),
                 ));
-
-       // if instance of Q then assume filters otherwise it's criteria.
-       if ($config instanceof Q)
-           $queue->filter($config);
-       else
-           $queue->config = $config;
+       $queue->config = $config;
 
        return $queue;
     }
@@ -1291,6 +1286,7 @@ class AssigneeChoiceField extends ChoiceField {
             $Q->negate();
         case 'includes':
             $teams = $agents = array();
+            $matches = count($value);
             foreach ($value as $id => $ST) {
                 switch ($id[0]) {
                 case 'M':
@@ -1300,10 +1296,10 @@ class AssigneeChoiceField extends ChoiceField {
                     $agents[] = (int) substr($id, 1);
                     break;
                 case 'T':
-                    if (!$thisstaff || !($staffTeams = $thisstaff->getTeams()))
+                    if ($thisstaff && ($staffTeams = $thisstaff->getTeams()))
+                         $teams = array_merge($staffTeams);
+                    elseif ($matches == 1)
                         return Q::any(['team_id' => null]);
-
-                    $teams = array_merge($staffTeams);
                     break;
                 case 't':
                     $teams[] = (int) substr($id, 1);
@@ -1780,6 +1776,17 @@ class ThreadCollaboratorCountField extends NumericField {
 
     function from_query($row, $name=false) {
          return ThreadCollaboratorCount::from_query($row, $name);
+    }
+}
+
+class TicketTasksCountField extends NumericField {
+
+    function addToQuery($query, $name=false) {
+        return TicketTasksCount::addToQuery($query, $name);
+    }
+
+    function from_query($row, $name=false) {
+         return TicketTasksCount::from_query($row, $name);
     }
 }
 

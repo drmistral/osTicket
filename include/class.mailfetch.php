@@ -126,6 +126,10 @@ class MailFetcher {
         return $this->ht['max_fetch'];
     }
 
+    function getMailFolder() {
+        return $this->mailbox_encode($this->ht['folder'] ?: 'INBOX');
+    }
+
     function getArchiveFolder() {
         return $this->mailbox_encode($this->ht['archive_folder']);
     }
@@ -133,7 +137,7 @@ class MailFetcher {
     /* Core */
 
     function connect() {
-        return ($this->mbox && $this->ping())?$this->mbox:$this->open();
+        return ($this->mbox && $this->ping())?$this->mbox:$this->open($this->getMailFolder());
     }
 
     function ping() {
@@ -831,7 +835,7 @@ class MailFetcher {
                 else {
                     // only fetch the body if necessary
                     $self = $this;
-                    $file['data'] = function() use ($self, $mid, $a) {
+                    $file['data_cbk'] = function() use ($self, $mid, $a) {
                         return $self->decode(imap_fetchbody($self->mbox,
                             $mid, $a['index']), $a['encoding']);
                     };
@@ -845,7 +849,9 @@ class MailFetcher {
                         $file['id'] = $f->getId();
                 }
                 catch (FileUploadError $ex) {
-                    $file['error'] = $file['name'] . ': ' . $ex->getMessage();
+                    $name = $file['name'];
+                    $file = array();
+                    $file['error'] = Format::htmlchars($name) . ': ' . $ex->getMessage();
                 }
 
                 $vars['attachments'][] = $file;

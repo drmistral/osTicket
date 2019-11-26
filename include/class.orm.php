@@ -682,6 +682,12 @@ class VerySimpleModel {
         else {
             $data = array('dirty' => $this->dirty);
             Signal::send('model.updated', $this, $data);
+            foreach ($this->dirty as $key => $value) {
+                if ($key != 'value' && $key != 'updated') {
+                    $type = array('type' => 'edited', 'key' => $key, 'orm_audit' => true);
+                    Signal::send('object.edited', $this, $type);
+                }
+            }
         }
         # Refetch row from database
         if ($refetch) {
@@ -717,9 +723,11 @@ class VerySimpleModel {
     }
 
     private function refetch() {
-        $this->ht =
-            static::objects()->filter($this->getPk())->values()->one()
-            + $this->ht;
+        try {
+            $this->ht =
+                static::objects()->filter($this->getPk())->values()->one()
+                + $this->ht;
+        } catch (DoesNotExist $ex) {}
     }
 
     private function getPk() {

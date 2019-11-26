@@ -2359,11 +2359,14 @@ class DatetimeField extends FormField {
             )),
             'between' => array('InlineformField', array(
                 'form' => array(
-                    'left' => new DatetimeField(),
+                    'left' => new DatetimeField($config + array('required' => true)),
                     'text' => new FreeTextField(array(
-                        'configuration' => array('content' => 'and'))
+                        'configuration' => array('content' => __('and')))
                     ),
-                    'right' => new DatetimeField(),
+                    'right' => new DatetimeField($config + array('required' => true)),
+                ),
+                'configuration' => array(
+                    'error' => '',
                 ),
             )),
             'period' => array('ChoiceField', array(
@@ -2418,15 +2421,21 @@ class DatetimeField extends FormField {
         case 'before':
             return new Q(array("{$name}__lt" => $value));
         case 'between':
-            foreach (array('left', 'right') as $side) {
-                $value[$side] = is_int($value[$side])
-                    ? DateTime::createFromFormat('U', !$config['gmt']
-                        ? Misc::gmtime($value[$side]) : $value[$side]) ?: $value[$side]
-                    : $value[$side];
-            }
+            $left = Format::parseDateTime($value['left']);
+            $right = Format::parseDateTime($value['right']);
+            if (!$left || !$right)
+                return null;
+
+            // TODO: allow time selection for between
+            $left = $left->setTime(00, 00, 00);
+            $right = $right->setTime(23, 59, 59);
+            // Convert time to db timezone
+            $dbtz = new DateTimeZone($cfg->getDbTimezone());
+            $left->setTimezone($dbtz);
+            $right->setTimezone($dbtz);
             return new Q(array(
-                "{$name}__gte" => $value['left'],
-                "{$name}__lte" => $value['right'],
+                "{$name}__gte" =>  $left->format('Y-m-d H:i:s'),
+                "{$name}__lte" =>  $right->format('Y-m-d H:i:s'),
             ));
         case 'ndaysago':
             $int = $intervals[$value['int'] ?: 'd'] ?: 'DAY';
@@ -3658,9 +3667,11 @@ class FileUploadField extends FormField {
         if (!$this->isValidFileType($file['name'], $file['type']))
             throw new FileUploadError(__('File type is not allowed'));
 
-        if (is_callable($file['data']))
-            $file['data'] = $file['data']();
-        if (!isset($file['size'])) {
+        if (!isset($file['data']) && isset($file['data_cbk'])
+                && is_callable($file['data_cbk']))
+            $file['data'] = $file['data_cbk']();
+
+        if (!isset($file['size']) && isset($file['data'])) {
             // bootstrap.php include a compat version of mb_strlen
             if (extension_loaded('mbstring'))
                 $file['size'] = mb_strlen($file['data'], '8bit');
@@ -3942,7 +3953,9 @@ class InlineFormField extends FormField {
 
     function validateEntry($value) {
         if (!$this->getInlineForm()->isValid()) {
-            $this->_errors[] = __('Correct any errors below and try again.');
+            $config = $this->getConfiguration();
+            $this->_errors[] = isset($config['error'])
+                ? $config['error'] : __('Correct any errors below and try again.');
         }
     }
 
@@ -4078,6 +4091,24 @@ class Widget {
      */
     function getJsValueGetter($id='%s') {
         return sprintf('%s.val()', $id);
+    }
+
+    /**
+     * getJsComparator
+     *
+     * Used with the dependent fields to get comparison expression
+     *
+     */
+    function getJsComparator($value, $id) {
+
+        if (strpos($value, '|') !== false)
+            return sprintf('$.inArray(%s, %s) !== -1',
+                   $this->getJsValueGetter($id),
+                   JsonDataEncoder::encode(explode('|', $value)));
+
+        return sprintf('%s == %s',
+                $this->getJsValueGetter($id),
+                JsonDataEncoder::encode($value));
     }
 }
 
@@ -4401,17 +4432,6 @@ class ChoicesWidget extends Widget {
         return sprintf('%s.find(":selected").val()', $id);
     }
 
-    function getJsComparator($value, $id) {
-
-        if (strpos($value, '|') !== false)
-           return sprintf('$.inArray(%s, %s) !== -1',
-                   $this->getJsValueGetter($id),
-                   JsonDataEncoder::encode(explode('|', $value)));
-
-        return sprintf('%s == %s',
-                $this->getJsValueGetter($id),
-                JsonDataEncoder::encode($value));
-    }
 }
 
 /**
@@ -4615,11 +4635,6 @@ class CheckboxWidget extends Widget {
         return sprintf('%s.is(":checked")', $id);
     }
 
-    function getJsComparator($value, $id) {
-        return sprintf('%s == %s',
-                $this->getJsValueGetter($id),
-                JsonDataEncoder::encode($value));
-    }
 }
 
 class DatetimePickerWidget extends Widget {

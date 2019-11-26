@@ -710,7 +710,7 @@ $.dialog = function (url, codes, cb, options) {
                         $('#msg_notice, #msg_error', $popup).delay(5000).slideUp();
                         $('div.tab_content[id] div.error:not(:empty)', $popup).each(function() {
                           var div = $(this).closest('.tab_content');
-                          $('a[href^=#'+div.attr('id')+']').parent().addClass('error');
+                          $('a[href^="#'+div.attr('id')+'"]').parent().addClass('error');
                         });
                     }
                 }
@@ -1029,6 +1029,25 @@ $(document).on('click', 'a.export', function(e) {
         $.dialog(checker, 201, function (xhr) { });
         return false;
      });
+    return false;
+});
+
+$(document).on('click', 'a.nomodalexport', function(e) {
+    e.preventDefault();
+    var url = 'ajax.php/'+$(this).attr('href').substr(1);
+
+     $.ajax({
+          type: "GET",
+          url: url,
+          dataType: 'json',
+          error:function(XMLHttpRequest, textStatus, errorThrown) {
+          },
+          success: function(resp) {
+              var checker = 'ajax.php/export/'+resp.eid+'/check';
+              $.dialog(checker, 201, function (xhr) { });
+              return false;
+          }
+    });
     return false;
 });
 

@@ -111,6 +111,7 @@ implements RestrictedAccess, Threadable, Searchable {
     const PERM_MERGE    = 'ticket.merge';
     const PERM_LINK     = 'ticket.link';
     const PERM_REPLY    = 'ticket.reply';
+    const PERM_MARKANSWERED = 'ticket.markanswered';
     const PERM_CLOSE    = 'ticket.close';
     const PERM_DELETE   = 'ticket.delete';
 
@@ -165,6 +166,11 @@ implements RestrictedAccess, Threadable, Searchable {
                 /* @trans */ 'Post Reply',
                 'desc'  =>
                 /* @trans */ 'Ability to post a ticket reply'),
+            self::PERM_MARKANSWERED => array(
+                'title' =>
+                /* @trans */ 'Mark as Answered',
+                'desc'  =>
+                /* @trans */ 'Ability to mark a ticket as Answered/Unanswered'),
             self::PERM_CLOSE => array(
                 'title' =>
                 /* @trans */ 'Close',
@@ -528,7 +534,7 @@ implements RestrictedAccess, Threadable, Searchable {
         if (!$recompute && $this->est_duedate)
             return $this->est_duedate;
 
-        if ($sla = $this->getSLA()) {
+        if (($sla = $this->getSLA()) && $sla->isActive()) {
             $schedule = $this->getDept()->getSchedule();
             $tz = new DateTimeZone($cfg->getDbTimezone());
             $dt = new DateTime($this->getReopenDate() ?:
@@ -541,16 +547,10 @@ implements RestrictedAccess, Threadable, Searchable {
     }
 
     function updateEstDueDate($clearOverdue=true) {
-        $DueDate = $this->getEstDueDate();
+        if ($this->isOverdue() && $clearOverdue)
+            $this->clearOverdue(false);
+
         $this->est_duedate = $this->getSLADueDate(true) ?: null;
-        // Clear overdue flag if duedate or SLA changes and the ticket is no longer overdue.
-        if ($this->isOverdue()
-            && $clearOverdue
-            && (!$DueDate // Duedate + SLA cleared
-                || Misc::db2gmtime($DueDate) > Misc::gmtime() //New due date in the future.
-        )) {
-             $this->isoverdue = 0;
-        }
 
         return $this->save();
     }
@@ -1254,7 +1254,6 @@ implements RestrictedAccess, Threadable, Searchable {
                         && $c->delete())
                      $collabs[] = (string) $c;
             }
-
             $this->logEvent('collab', array('del' => $collabs));
         }
 
@@ -1443,7 +1442,7 @@ implements RestrictedAccess, Threadable, Searchable {
 
     // Ticket Status helper.
     function setStatus($status, $comments='', &$errors=array(), $set_closing_agent=true) {
-        global $thisstaff;
+        global $cfg, $thisstaff;
 
         if ($thisstaff && !($role=$this->getRole($thisstaff)))
             return false;
@@ -1474,7 +1473,7 @@ implements RestrictedAccess, Threadable, Searchable {
             return true;
 
         // Perform checks on the *new* status, _before_ the status changes
-        $ecb = null;
+        $ecb = $refer = null;
         switch ($status->getState()) {
             case 'closed':
                 // Check if ticket is closeable
@@ -1485,23 +1484,46 @@ implements RestrictedAccess, Threadable, Searchable {
                 if ($errors)
                     return false;
 
+                $refer = $this->staff ?: $thisstaff;
                 $this->closed = $this->lastupdate = SqlFunction::NOW();
-                $this->duedate = null;
                 if ($thisstaff && $set_closing_agent)
                     $this->staff = $thisstaff;
+                // Clear overdue flags & due dates
                 $this->clearOverdue(false);
 
                 $ecb = function($t) use ($status) {
                     $t->logEvent('closed', array('status' => array($status->getId(), $status->getName())), null, 'closed');
+                    $type = array('type' => 'closed');
+                    Signal::send('object.edited', $t, $type);
                     $t->deleteDrafts();
                 };
                 break;
             case 'open':
-                // TODO: check current status if it allows for reopening
+                if ($this->isClosed() && $this->isReopenable()) {
+                    // Auto-assign to closing staff or the last respondent if the
+                    // agent is available and has access. Otherwise, put the ticket back
+                    // to unassigned pool.
+                    $dept = $this->getDept();
+                    $staff = $this->getStaff() ?: $this->getLastRespondent();
+                    $autoassign = (!$dept->disableReopenAutoAssign());
+                    if ($autoassign
+                            && $staff
+                            // Is agent on vacation ?
+                            && $staff->isAvailable()
+                            // Does the agent have access to dept?
+                            && $staff->canAccessDept($dept))
+                        $this->setStaffId($staff->getId());
+                    else
+                        $this->setStaffId(0); // Clear assignment
+                }
+
                 if ($this->isClosed()) {
-                    $this->closed = $this->lastupdate = $this->reopened = SqlFunction::NOW();
+                    $this->closed = null;
+                    $this->lastupdate = $this->reopened = SqlFunction::NOW();
                     $ecb = function ($t) {
                         $t->logEvent('reopened', false, null, 'closed');
+                        // Set new sla duedate if any
+                        $t->updateEstDuedate();
                     };
                 }
 
@@ -1515,8 +1537,12 @@ implements RestrictedAccess, Threadable, Searchable {
         }
 
         $this->status = $status;
-        if (!$this->save())
+        if (!$this->save(true))
             return false;
+
+        // Refer thread to previously assigned or closing agent
+        if ($refer && $cfg->autoReferTicketsOnClose())
+            $this->thread->refer($refer);
 
         // Log status change b4 reload — if currently has a status. (On new
         // ticket, the ticket is opened and thereafter the status is set to
@@ -1835,24 +1861,8 @@ implements RestrictedAccess, Threadable, Searchable {
         // We're also checking autorespond flag because we don't want to
         // reopen closed tickets on auto-reply from end user. This is not to
         // confused with autorespond on new message setting
-        if ($reopen && $this->isClosed() && $this->isReopenable()) {
+        if ($reopen && $this->isClosed() && $this->isReopenable())
             $this->reopen();
-            // Auto-assign to closing staff or the last respondent if the
-            // agent is available and has access. Otherwise, put the ticket back
-            // to unassigned pool.
-            $dept = $this->getDept();
-            $staff = $this->getStaff() ?: $this->getLastRespondent();
-            $autoassign = (!$dept->disableReopenAutoAssign());
-            if ($autoassign
-                    && $staff
-                    // Is agent on vacation ?
-                    && $staff->isAvailable()
-                    // Does the agent have access to dept?
-                    && $staff->canAccessDept($dept))
-                $this->setStaffId($staff->getId());
-            else
-                $this->setStaffId(0); // Clear assignment
-        }
 
         if (!$autorespond)
             return;
@@ -2327,6 +2337,9 @@ implements RestrictedAccess, Threadable, Searchable {
             'collaborator_count' => new ThreadCollaboratorCountField(array(
                         'label' => __('Collaborator Count'),
             )),
+            'task_count' => new TicketTasksCountField(array(
+                        'label' => __('Task Count'),
+            )),
             'reopen_count' => new TicketReopenCountField(array(
                         'label' => __('Reopen Count'),
             )),
@@ -2371,6 +2384,10 @@ implements RestrictedAccess, Threadable, Searchable {
     function markOverdue($whine=true) {
         global $cfg;
 
+        // Only open tickets can be marked overdue
+        if (!$this->isOpen())
+            return false;
+
         if ($this->isOverdue())
             return true;
 
@@ -2385,12 +2402,10 @@ implements RestrictedAccess, Threadable, Searchable {
     }
 
     function clearOverdue($save=true) {
-        if (!$this->isOverdue())
-            return true;
 
         //NOTE: Previously logged overdue event is NOT annuled.
-
-        $this->isoverdue = 0;
+        if (!$this->isOverdue())
+            $this->isoverdue = 0;
 
         // clear due date if it's in the past
         if ($this->getDueDate() && Misc::db2gmtime($this->getDueDate()) <= Misc::gmtime())
@@ -2398,7 +2413,7 @@ implements RestrictedAccess, Threadable, Searchable {
 
         // Clear SLA if est. due date is in the past
         if ($this->getSLADueDate() && Misc::db2gmtime($this->getSLADueDate()) <= Misc::gmtime())
-            $this->sla = null;
+            $this->est_duedate = null;
 
         return $save ? $this->save() : true;
     }
@@ -2536,6 +2551,7 @@ implements RestrictedAccess, Threadable, Searchable {
                     $child->getThread()->setExtra($parentThread);
 
                 $child->setMergeType($options['combine']);
+                $child->setStatus(intval($options['statusId']));
 
                 if ($options['delete-child'] || $options['move-tasks']) {
                     if ($tasks = Task::objects()
@@ -2615,7 +2631,7 @@ implements RestrictedAccess, Threadable, Searchable {
                 $this->selectSLAId($slaId);
 
         // Log transfer event
-        $this->logEvent('transferred');
+        $this->logEvent('transferred', array('dept' => $dept->getName()));
 
         // Post internal note if any
         $note = null;
@@ -2731,6 +2747,11 @@ implements RestrictedAccess, Threadable, Searchable {
 
         $this->logEvent('assigned', $data, $user);
 
+        $thisstaff = $staff;
+        $key = $data['claim'] ? 'claim' : 'auto';
+        $type = array('type' => 'assigned', $key => true);
+        Signal::send('object.edited', $this, $type);
+
         return true;
     }
 
@@ -2757,6 +2778,7 @@ implements RestrictedAccess, Threadable, Searchable {
         global $thisstaff;
 
         $evd = array();
+        $audit = array();
         $refer = null;
         $dept = $this->getDept();
         $assignee = $form->getAssignee();
@@ -2776,8 +2798,10 @@ implements RestrictedAccess, Threadable, Searchable {
                 if ($thisstaff && $thisstaff->getId() == $assignee->getId()) {
                     $alert = false;
                     $evd['claim'] = true;
+                    $audit = array('staff' => $assignee->getName()->name,'claim' => true);
                 } else {
                     $evd['staff'] = array($assignee->getId(), (string) $assignee->getName()->getOriginal());
+                    $audit = array('staff' => $assignee->getName()->name);
                 }
             }
         } elseif ($assignee instanceof Team) {
@@ -2792,6 +2816,7 @@ implements RestrictedAccess, Threadable, Searchable {
                 $refer = $this->team ?: null;
                 $this->team_id = $assignee->getId();
                 $evd = array('team' => $assignee->getId());
+                $audit = array('team' => $assignee->getName());
             }
         } else {
             $errors['assignee'] = __('Unknown assignee');
@@ -2801,6 +2826,10 @@ implements RestrictedAccess, Threadable, Searchable {
             return false;
 
         $this->logEvent('assigned', $evd);
+
+        $type = array('type' => 'assigned');
+        $type += $audit;
+        Signal::send('object.edited', $this, $type);
 
         $this->onAssign($assignee, $form->getComments(), $alert);
 
@@ -2846,6 +2875,7 @@ implements RestrictedAccess, Threadable, Searchable {
         global $thisstaff;
 
         $evd = array();
+        $audit = array();
         $referee = $form->getReferee();
         switch (true) {
         case $referee instanceof Staff:
@@ -2860,6 +2890,7 @@ implements RestrictedAccess, Threadable, Searchable {
                         __('referral'));
             } else {
                 $evd['staff'] = array($referee->getId(), (string) $referee->getName()->getOriginal());
+                $audit = array('staff' => $referee->getName()->name);
             }
             break;
         case $referee instanceof Team:
@@ -2871,6 +2902,7 @@ implements RestrictedAccess, Threadable, Searchable {
             } else {
                 //TODO::
                 $evd = array('team' => $referee->getId());
+                $audit = array('team' => $referee->getName());
             }
             break;
         case $referee instanceof Dept:
@@ -2882,6 +2914,7 @@ implements RestrictedAccess, Threadable, Searchable {
             } else {
                 //TODO::
                 $evd = array('dept' => $referee->getId());
+                $audit = array('dept' => $referee->getName());
             }
             break;
         default:
@@ -2895,6 +2928,10 @@ implements RestrictedAccess, Threadable, Searchable {
             return false;
 
         $this->logEvent('referred', $evd);
+
+        $type = array('type' => 'referred');
+        $type += $audit;
+        Signal::send('object.edited', $this, $type);
 
         return true;
     }
@@ -2945,7 +2982,7 @@ implements RestrictedAccess, Threadable, Searchable {
         if ($c)
             $c->delete();
 
-        $this->logEvent('edited', array('owner' => $user->getId()));
+        $this->logEvent('edited', array('owner' => $user->getId(), 'fields' => array('Ticket Owner' => $user->getName()->name)));
 
         return true;
     }
@@ -3048,6 +3085,8 @@ implements RestrictedAccess, Threadable, Searchable {
             // TODO: Can collaborators add others?
             if ($collabs) {
                 $ticket->logEvent('collab', array('add' => $collabs), $message->user);
+                $type = array('type' => 'collab', 'add' => $collabs);
+                Signal::send('object.created', $ticket, $type);
             }
         }
 
@@ -3133,6 +3172,9 @@ implements RestrictedAccess, Threadable, Searchable {
                 $sentlist[] = $staff->getEmail();
             }
         }
+        $type = array('type' => 'message', 'uid' => $vars['userId']);
+        Signal::send('object.created', $this, $type);
+
         return $message;
     }
 
@@ -3269,6 +3311,9 @@ implements RestrictedAccess, Threadable, Searchable {
 
         $this->onResponse($response, array('assignee' => $assignee)); //do house cleaning..
 
+        $type = array('type' => 'message');
+        Signal::send('object.created', $this, $type);
+
         /* email the user??  - if disabled - then bail out */
         if (!$alert)
             return $response;
@@ -3338,6 +3383,24 @@ implements RestrictedAccess, Threadable, Searchable {
 
     // History log -- used for statistics generation (pretty reports)
     function logEvent($state, $data=null, $user=null, $annul=null) {
+        switch ($state) {
+            case 'collab':
+            case 'transferred':
+                $type = $data;
+                $type['type'] = $state;
+                break;
+            case 'edited':
+                $type = array('type' => $state, 'fields' => $data['fields'] ? $data['fields'] : $data);
+                break;
+            case 'assigned':
+            case 'referred':
+                break;
+            default:
+                $type = array('type' => $state);
+                break;
+        }
+        if ($type)
+            Signal::send('object.created', $this, $type);
         if ($this->getThread())
             $this->getThread()->getEvents()->log($this, $state, $data, $user, $annul);
     }
@@ -3407,6 +3470,9 @@ implements RestrictedAccess, Threadable, Searchable {
             'assignee' => $assignee
         ), $alert);
 
+        $type = array('type' => 'note');
+        Signal::send('object.created', $this, $type);
+
         return $note;
     }
 
@@ -3440,6 +3506,12 @@ implements RestrictedAccess, Threadable, Searchable {
         Http::download($name, 'application/pdf', $pdf->output($name, 'S'));
         //Remember what the user selected - for autoselect on the next print.
         $_SESSION['PAPER_SIZE'] = $psize;
+        exit;
+    }
+
+    function zipExport($notes=true, $tasks=false) {
+        $exporter = new TicketZipExporter($this);
+        $exporter->download(['notes'=>$notes, 'tasks'=>$tasks]);
         exit;
     }
 
@@ -3628,8 +3700,10 @@ implements RestrictedAccess, Threadable, Searchable {
             }
         }
 
-        if ($changes)
-            $this->logEvent('edited', $changes);
+        if ($changes) {
+          $this->logEvent('edited', $changes);
+        }
+
 
         // Reselect SLA if transient
         if (!$keepSLA
@@ -3638,22 +3712,14 @@ implements RestrictedAccess, Threadable, Searchable {
             $this->selectSLAId();
         }
 
-        // Update estimated due date in database
-        $estimatedDueDate = $this->getEstDueDate();
+        if (!$this->save())
+            return false;
+
         $this->updateEstDueDate();
-
-        // Clear overdue flag if duedate or SLA changes and the ticket is no longer overdue.
-        if($this->isOverdue()
-            && (!$estimatedDueDate //Duedate + SLA cleared
-                || Misc::db2gmtime($estimatedDueDate) > Misc::gmtime() //New due date in the future.
-        )) {
-            $this->clearOverdue();
-        }
-
         Signal::send('model.updated', $this);
-        return $this->save();
-    }
 
+        return true;
+    }
 
     function updateField($form, &$errors) {
         global $thisstaff, $cfg;
@@ -3729,10 +3795,9 @@ implements RestrictedAccess, Threadable, Searchable {
 
         $this->lastupdate = SqlFunction::NOW();
 
+        $this->save();
         if ($updateDuedate)
             $this->updateEstDueDate();
-
-        $this->save();
 
         Signal::send('model.updated', $this);
 
@@ -3879,7 +3944,7 @@ implements RestrictedAccess, Threadable, Searchable {
      */
     static function create($vars, &$errors, $origin, $autorespond=true,
             $alertstaff=true) {
-        global $ost, $cfg, $thisclient, $thisstaff;
+        global $ost, $cfg, $thisstaff;
 
         // Don't enforce form validation for email
         $field_filter = function($type) use ($origin) {
@@ -4512,9 +4577,9 @@ implements RestrictedAccess, Threadable, Searchable {
 
             $msg = $ticket->replaceVars($msg->asArray(),
                 array(
-                    'message'   => $message,
-                    'signature' => $signature,
+                    'message'   => $message ?: '',
                     'response'  => $response ?: '',
+                    'signature' => $signature,
                     'recipient' => $ticket->getOwner(), //End user
                     'staff'     => $thisstaff,
                 )
@@ -4535,6 +4600,7 @@ implements RestrictedAccess, Threadable, Searchable {
         $overdue = static::objects()
             ->filter(array(
                 'isoverdue' => 0,
+                'status__state' => 'open',
                 Q::any(array(
                     Q::all(array(
                         'duedate__isnull' => true,
