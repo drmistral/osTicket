@@ -100,8 +100,13 @@ if ($lang) {
 <?php include STAFFINC_DIR . "templates/navigation.tmpl.php"; ?>
     </ul>
     <?php include STAFFINC_DIR . "templates/sub-navigation.tmpl.php"; ?>
-
+        <?php
+        if($_REQUEST['a'] || $_REQUEST['queue']) {
+        ?>
+        <div id="content-full-width">
+        <?php }else{ ?>
         <div id="content">
+        <?php } ?>
         <?php if($errors['err']) { ?>
             <div id="msg_error"><?php echo $errors['err']; ?></div>
         <?php }elseif($msg) { ?>

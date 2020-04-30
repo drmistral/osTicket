@@ -126,7 +126,7 @@ a time {
 
 
 #container {
-    width:960px;
+    width:100%;
     margin:0 auto 20px auto;
 }
 
@@ -726,7 +726,7 @@ a time {
 .jb-overflowmenu {
     position: relative;
     height:35px;
-    width: 960px;
+    width: 100%;
 }
 
 
@@ -1080,6 +1080,19 @@ a.Icon:hover {
     border-bottom:3px solid #bbb;
     padding:10px 10px 20px 10px;
     background:#fff;
+    width:960px;
+    margin:0 auto 20px auto;
+}
+
+#content-full-width {
+    clear:both;
+    border:1px solid #aaa;
+    border-top:none;
+    border-bottom:3px solid #bbb;
+    padding:10px 10px 20px 10px;
+    background:#fff;
+    width:98%;
+    margin:0 auto 20px auto;
 }
 
 a {
@@ -1127,6 +1140,7 @@ table.list {
     background:#ccc;
     margin: 2px 0;
     border-bottom: 1px solid #ccc;
+    width: 100%;
 }
 
 table.list caption {
@@ -3131,6 +3145,7 @@ tr i.help-tip.warning {
 .required {
     font-weight: bold;
 }
+/*
 .truncate {
     width: auto;
     display: inline-block;
@@ -3140,6 +3155,7 @@ tr i.help-tip.warning {
     text-overflow: ellipsis;
     vertical-align: bottom;
 }
+*/
 .truncate.bleed {
     text-overflow: clip;
 }
@@ -3232,6 +3248,7 @@ td.indented {
 }
 .sticky.bar .content {
   margin: auto;
+  width: 100% !important;
 }
 .sticky.bar.fixed .notsticky {
   display: none !important;

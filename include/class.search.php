@@ -832,6 +832,9 @@ class SavedQueue extends CustomQueue {
         if (!$this->useStandardColumns() && ($columns=$this->getCustomColumns()))
             return $columns;
 
+        // Forces use the columns of the "Open" queue as a default template
+        $use_template=true;            
+
         return parent::getColumns($use_template);
     }
 
